@@ -12,9 +12,10 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from streamlit_cookies_controller import CookieController
 
 from invoice_generator import generate_invoice
-from utils import ai_autofill, calculate_totals, compute_item_amount, convert_to_words
+from utils import ai_autofill, calculate_totals, compute_item_amount, convert_to_words, generate_utr, generate_invoice_number
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page config
@@ -158,50 +159,29 @@ textarea {
 # ─────────────────────────────────────────────────────────────────────────────
 # Session state defaults
 # ─────────────────────────────────────────────────────────────────────────────
-MEAL_TYPES = ["Breakfast", "Lunch", "Dinner", "Snacks", "Beverages", "Other"]
+CATEGORIES = ["Product", "Service", "Subscription", "Consultation", "Labor", "Hardware", "Software", "Food", "Other"]
 
 def _default_items() -> list[dict]:
-    """Return the sample Dine & Spoon order as default rows (fully editable)."""
+    """Return a generic sample order as default rows (fully editable)."""
     raw = [
-        # date,       description,                  qty,  unit_price, gst_pct,  meal_type
-        ("27 Jan", "Masala Chai",                    3,   50.0,  5.0, "Breakfast"),
-        ("27 Jan", "Aloo Paratha (w/ Butter)",       3,  110.0,  5.0, "Breakfast"),
-        ("27 Jan", "Poha",                           3,   90.0,  5.0, "Breakfast"),
-        ("27 Jan", "Fresh Fruit Curd Bowl",          3,   80.0,  5.0, "Breakfast"),
-        ("27 Jan", "Dal Tadka",                      1,  180.0,  5.0, "Lunch"),
-        ("27 Jan", "Paneer Matar Sabji",             1,  220.0,  5.0, "Lunch"),
-        ("27 Jan", "Jeera Rice",                     2,  120.0,  5.0, "Lunch"),
-        ("27 Jan", "Butter Roti",                    6,   25.0,  5.0, "Lunch"),
-        ("27 Jan", "Sweet Lassi",                    3,   90.0,  5.0, "Lunch"),
-        ("27 Jan", "Gulab Jamun (2 pcs)",            3,   65.0,  5.0, "Lunch"),
-        ("27 Jan", "Paneer Tikka (Starter)",         1,  280.0,  5.0, "Dinner"),
-        ("27 Jan", "Paneer Butter Masala",           1,  280.0,  5.0, "Dinner"),
-        ("27 Jan", "Dal Makhani",                    1,  220.0,  5.0, "Dinner"),
-        ("27 Jan", "Butter Naan",                    6,   45.0,  5.0, "Dinner"),
-        ("27 Jan", "Raita",                          1,   80.0,  5.0, "Dinner"),
-        ("27 Jan", "Masala Cold Drink",              3,   65.0,  5.0, "Dinner"),
-        ("28 Jan", "Hara Bhara Kabab",               1,  200.0,  5.0, "Dinner"),
-        ("28 Jan", "Kadai Paneer",                   1,  260.0,  5.0, "Dinner"),
-        ("28 Jan", "Veg Biryani",                    2,  200.0,  5.0, "Dinner"),
-        ("28 Jan", "Garlic Naan",                    4,   50.0,  5.0, "Dinner"),
-        ("28 Jan", "Fresh Lime Soda",                3,   60.0,  5.0, "Dinner"),
-        ("29 Jan", "Veg Spring Rolls",               1,  180.0,  5.0, "Dinner"),
-        ("29 Jan", "Shahi Paneer",                   1,  280.0,  5.0, "Dinner"),
-        ("29 Jan", "Veg Manchurian Dry",             1,  200.0,  5.0, "Dinner"),
-        ("29 Jan", "Laccha Paratha",                 4,   50.0,  5.0, "Dinner"),
-        ("29 Jan", "Masala Chaas",                   3,   55.0,  5.0, "Dinner"),
+        # date,       description,                  qty,  unit_price, gst_pct,  category
+        ("15 Oct", "Consulting Services (Hours)",      5,  1500.0, 18.0, "Service"),
+        ("15 Oct", "Software License (Annual)",        1, 12000.0, 18.0, "Software"),
+        ("16 Oct", "Hardware Setup & Installation",    1,  5000.0, 18.0, "Service"),
+        ("16 Oct", "Network Router (AC3200)",          2,  3500.0, 18.0, "Hardware"),
+        ("18 Oct", "Monthly Maintenance Subscription", 1,  2500.0, 18.0, "Subscription"),
     ]
     return [
         {
             "date": date,
-            "meal_type": meal_type,
+            "category": category,
             "description": desc,
             "qty": float(qty),
             "unit_price": float(unit_price),
             "gst_pct": float(gst_pct),
             "amount": compute_item_amount(float(qty), float(unit_price), float(gst_pct)),
         }
-        for date, desc, qty, unit_price, gst_pct, meal_type in raw
+        for date, desc, qty, unit_price, gst_pct, category in raw
     ]
 
 
@@ -216,6 +196,31 @@ if "logo_path" not in st.session_state:
 
 if "ai_message" not in st.session_state:
     st.session_state.ai_message = ""
+
+if "utr_code" not in st.session_state:
+    st.session_state.utr_code = generate_utr()
+
+if "invoice_number" not in st.session_state:
+    st.session_state.invoice_number = generate_invoice_number()
+
+# Defaults for business inputs to be managed by session_state
+defaults = {
+    "business_name": "",
+    "business_address": "",
+    "business_phone": "",
+    "business_gstin": "",
+    "business_reg_no": "",
+    "handled_by": "",
+    "staff_id": "",
+    "theme_accent": "#E8650A",
+    "theme_header": "#1A1A2E",
+    "theme_footer": "#1A1A2E",
+}
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+cookie_controller = CookieController()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -240,23 +245,27 @@ def _items_to_dicts(df: pd.DataFrame) -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ── SIDEBAR: Restaurant Details ───────────────────────────────────────────────
+# ── SIDEBAR: Business Details ───────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown('<div class="page-title">🧾 AI Invoice</div>', unsafe_allow_html=True)
-    st.caption("Generator · v1.0")
+    st.caption("Generator · v3.2.5")
     st.divider()
 
-    st.markdown('<div class="section-header">🏪 Restaurant Details</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">🏢 Business Details</div>', unsafe_allow_html=True)
 
-    restaurant_name = st.text_input("Restaurant Name", value="")
-    address = st.text_input(
-        "Address",
-        value="",
-    )
-    phone = st.text_input("Phone", value="")
-    gstin = st.text_input("GSTIN", value="")
-    fssai = st.text_input("FSSAI", value="")
+    business_name = st.text_input("Business Name", value=st.session_state.business_name)
+    address = st.text_input("Address", value=st.session_state.business_address)
+    phone = st.text_input("Phone", value=st.session_state.business_phone)
+    gstin = st.text_input("GSTIN / Tax ID", value=st.session_state.business_gstin)
+    reg_no = st.text_input("Registration No.", value=st.session_state.business_reg_no)
+
+    # Sync manual edits back to session state so they persist across reruns
+    st.session_state.business_name = business_name
+    st.session_state.business_address = address
+    st.session_state.business_phone = phone
+    st.session_state.business_gstin = gstin
+    st.session_state.business_reg_no = reg_no
 
     logo_file = st.file_uploader("Upload Logo (PNG / JPG)", type=["png", "jpg", "jpeg"])
     if logo_file:
@@ -269,13 +278,37 @@ with st.sidebar:
         st.session_state.logo_path = None
 
     st.divider()
+    st.markdown('<div class="section-header">🎨 Invoice Theme</div>', unsafe_allow_html=True)
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        accent_color = st.color_picker("Accent", value=st.session_state.theme_accent)
+    with c2:
+        header_color = st.color_picker("Header", value=st.session_state.theme_header)
+    with c3:
+        footer_color = st.color_picker("Footer", value=st.session_state.theme_footer)
+        
+    st.session_state.theme_accent = accent_color
+    st.session_state.theme_header = header_color
+    st.session_state.theme_footer = footer_color
+
+    st.divider()
     st.markdown('<div class="section-header">🔑 AI Settings</div>', unsafe_allow_html=True)
-    openai_api_key = st.text_input("OpenAI API Key", type="password", placeholder="sk-...")
+    
+    saved_groq_key = cookie_controller.get('groq_api_key') or ""
+    openai_api_key = st.text_input("Groq / Custom API Key", type="password", value=saved_groq_key, placeholder="gsk-...")
+    if openai_api_key and openai_api_key != saved_groq_key:
+        cookie_controller.set('groq_api_key', openai_api_key)
+        
     openai_base_url = st.text_input(
         "API Base URL",
-        value="https://api.openai.com/v1",
-        help="Change for compatible providers (e.g. Groq, Azure).",
+        value="https://api.groq.com/openai/v1",
+        help="Change for compatible providers (e.g. Groq, OpenRouter).",
     )
+    
+    saved_tavily_key = cookie_controller.get('tavily_api_key') or ""
+    tavily_api_key = st.text_input("Tavily API Key (Optional)", type="password", value=saved_tavily_key, placeholder="tvly-...", help="Used to locate business details on the web.")
+    if tavily_api_key and tavily_api_key != saved_tavily_key:
+        cookie_controller.set('tavily_api_key', tavily_api_key)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -293,13 +326,13 @@ with st.expander("🤖 AI Autofill – Describe your order in plain English", ex
     st.markdown(
         '<div class="ai-panel">'
         '<p style="color:#A0AEC0;font-size:0.9rem;margin:0 0 8px;">Example: '
-        '"Generate invoice for 3 guests who had paneer tikka, butter naan, and sweet lassi"</p>'
+        '"Generate invoice for Jane Doe for AC Repair service at $50/hr for 2 hrs and 1 gas refill at $20"</p>'
         "</div>",
         unsafe_allow_html=True,
     )
     ai_prompt = st.text_area(
         "Order description",
-        placeholder="e.g. 2 guests had dal makhani, 3 butter naans and 2 mango lassis",
+        placeholder="e.g. Acme Corp bought 5 enterprise software licenses at $200 each and 1 day of setup for $500",
         height=80,
         label_visibility="collapsed",
     )
@@ -309,10 +342,38 @@ with st.expander("🤖 AI Autofill – Describe your order in plain English", ex
         else:
             with st.spinner("Asking AI to parse your order…"):
                 try:
-                    ai_items = ai_autofill(ai_prompt, openai_api_key, openai_base_url)
-                    new_df = pd.DataFrame(ai_items)
-                    st.session_state.items_df = new_df
-                    st.session_state.ai_message = f"✅ {len(ai_items)} item(s) added from AI."
+                    ai_result = ai_autofill(ai_prompt, openai_api_key, tavily_api_key, openai_base_url)
+                    
+                    # Update items
+                    ai_items = ai_result.get("items", [])
+                    if ai_items:
+                        new_df = pd.DataFrame(ai_items)
+                        st.session_state.items_df = new_df
+                        
+                    # Update business details
+                    bus_info = ai_result.get("business", {})
+                    if bus_info:
+                        if bus_info.get("name"): st.session_state.business_name = bus_info["name"]
+                        if bus_info.get("address"): st.session_state.business_address = bus_info["address"]
+                        if bus_info.get("phone"): st.session_state.business_phone = bus_info["phone"]
+                        if bus_info.get("gstin"): st.session_state.business_gstin = bus_info["gstin"]
+                        if bus_info.get("reg_no"): st.session_state.business_reg_no = bus_info["reg_no"]
+
+                    # Update staff details
+                    staff_info = ai_result.get("staff", {})
+                    if staff_info:
+                        if staff_info.get("handled_by"): st.session_state.handled_by = staff_info["handled_by"]
+                        if staff_info.get("staff_id"): st.session_state.staff_id = staff_info["staff_id"]
+                        
+                    # Update Invoice Date manually if provided
+                    extracted_date = ai_result.get("invoice_date", "Today")
+                    if extracted_date and str(extracted_date).lower() != "today":
+                        import dateparser
+                        parsed = dateparser.parse(str(extracted_date))
+                        if parsed:
+                            st.session_state.invoice_date = parsed.date()
+
+                    st.session_state.ai_message = f"✅ {len(ai_items)} item(s) added and details updated from AI."
                     st.rerun()
                 except RuntimeError as e:
                     st.error(str(e))
@@ -328,20 +389,38 @@ col_inv, col_cust, col_staff = st.columns(3)
 
 with col_inv:
     st.markdown('<div class="section-header">📄 Invoice Details</div>', unsafe_allow_html=True)
-    invoice_number = st.text_input("Invoice Number", value="")
-    invoice_date = st.date_input("Invoice Date", value=datetime.date.today())
-    visit_period = st.text_input("Visit / Stay Period", value="", placeholder="e.g. 27 Jan – 29 Jan 2026")
+    # Auto Invoice Number Code Layout
+    i_col1, i_col2 = st.columns([4, 1])
+    with i_col1:
+         invoice_number = st.text_input("Invoice Number", value=st.session_state.invoice_number)
+         st.session_state.invoice_number = invoice_number
+    with i_col2:
+         st.markdown("<br>", unsafe_allow_html=True) # alignment spacer
+         if st.button("🔄", help="Generate new Invoice #", use_container_width=True, key="btn_inv"):
+             st.session_state.invoice_number = generate_invoice_number()
+             st.rerun()
+             
+    if "invoice_date" not in st.session_state:
+        st.session_state.invoice_date = datetime.date.today()
+    invoice_date = st.date_input("Invoice Date", value=st.session_state.invoice_date)
+    st.session_state.invoice_date = invoice_date
+    
+    visit_period = st.text_input("Service / Project Period", value="", placeholder="e.g. 27 Jan – 29 Jan 2026")
 
 with col_cust:
     st.markdown('<div class="section-header">👤 Customer Details</div>', unsafe_allow_html=True)
-    customer_name = st.text_input("Customer Name", value="Walk-in Guest")
-    table_ref = st.text_input("Table Reference", value="TBL-01 / WALK-IN")
-    num_guests = st.number_input("Number of Guests", min_value=1, value=2, step=1)
+    customer_name = st.text_input("Customer Name", value="Walk-in Client")
+    customer_ref = st.text_input("Customer/Project Ref", value="REF-01")
+    customer_qty = st.number_input("Customer Qty / Pax", min_value=1, value=1, step=1)
 
 with col_staff:
-    st.markdown('<div class="section-header">👨‍🍳 Staff Details</div>', unsafe_allow_html=True)
-    served_by = st.text_input("Served By", value="")
-    staff_id = st.text_input("Staff ID", value="")
+    st.markdown('<div class="section-header">👨‍💼 Staff/Agent Details</div>', unsafe_allow_html=True)
+    handled_by = st.text_input("Handled By", value=st.session_state.handled_by)
+    staff_id = st.text_input("Staff/Agent ID", value=st.session_state.staff_id)
+    
+    st.session_state.handled_by = handled_by
+    st.session_state.staff_id = staff_id
+    
     st.write("")  # spacer
 
 st.divider()
@@ -349,16 +428,16 @@ st.divider()
 # ── Items Table ───────────────────────────────────────────────────────────────
 _hdr_col, _reset_col, _clear_col = st.columns([4, 1, 1])
 with _hdr_col:
-    st.markdown('<div class="section-header">🍽️ Invoice Items</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">📦 Invoice Items</div>', unsafe_allow_html=True)
 with _reset_col:
-    if st.button("↺ Reset to Sample", use_container_width=True, help="Restore the original Dine & Spoon demo order"):
+    if st.button("↺ Reset to Sample", use_container_width=True, help="Restore the original sample order"):
         st.session_state.items_df = pd.DataFrame(_default_items())
         st.rerun()
 with _clear_col:
     if st.button("🗑 Clear All", use_container_width=True, help="Remove all rows and start with a blank table"):
         st.session_state.items_df = pd.DataFrame([{
             "date": datetime.date.today().strftime("%d %b"),
-            "meal_type": "Dinner",
+            "category": "Service",
             "description": "",
             "qty": 1.0,
             "unit_price": 0.0,
@@ -374,10 +453,10 @@ edited_df = st.data_editor(
     hide_index=True,
     column_config={
         "date": st.column_config.TextColumn("Date", width="small"),
-        "meal_type": st.column_config.SelectboxColumn(
-            "Meal",
-            options=MEAL_TYPES,
-            default="Dinner",
+        "category": st.column_config.SelectboxColumn(
+            "Category",
+            options=CATEGORIES,
+            default="Service",
             width="small",
             required=True,
         ),
@@ -420,7 +499,17 @@ with col_pay:
         ["Cash", "UPI", "Card", "Net Banking", "Cheque", "Other"],
         index=1,
     )
-    payment_ref = st.text_input("Payment Reference / UTR", value="")
+    
+    # Auto UTR Generation Code Layout
+    u_col1, u_col2 = st.columns([5, 1])
+    with u_col1:
+         payment_ref = st.text_input("Payment Reference / UTR", value=st.session_state.utr_code)
+         st.session_state.utr_code = payment_ref
+    with u_col2:
+         st.markdown("<br>", unsafe_allow_html=True) # alignment spacer
+         if st.button("🔄", help="Generate new UTR code", use_container_width=True):
+             st.session_state.utr_code = generate_utr()
+             st.rerun()
 
 # Compute totals
 items_list = _items_to_dicts(edited_df)
@@ -450,23 +539,29 @@ with gen_col:
     if st.button("🧾 Generate Invoice", use_container_width=True):
         with st.spinner("Generating professional PDF…"):
             invoice_data = {
-                # Restaurant
-                "restaurant_name": restaurant_name,
+                # Business
+                "business_name": business_name,
                 "address": address,
                 "phone": phone,
                 "gstin": gstin,
-                "fssai": fssai,
+                "reg_no": reg_no,
                 "logo_path": st.session_state.logo_path,
                 # Invoice
                 "invoice_number": invoice_number,
                 "invoice_date": invoice_date.strftime("%d %B %Y"),
                 "visit_period": visit_period or invoice_date.strftime("%d %B %Y"),
+                # Theme
+                "theme": {
+                    "accent_color": accent_color,
+                    "header_color": header_color,
+                    "footer_color": footer_color,
+                },
                 # Customer
                 "customer_name": customer_name,
-                "table_ref": table_ref,
-                "num_guests": str(int(num_guests)),
+                "customer_ref": customer_ref,
+                "customer_qty": str(int(customer_qty)),
                 # Staff
-                "served_by": served_by,
+                "handled_by": handled_by,
                 "staff_id": staff_id,
                 # Items & Totals
                 "items": items_list,
@@ -488,7 +583,7 @@ with dl_col:
     if st.session_state.pdf_bytes:
         safe_name = (
             invoice_number.replace(" ", "_").replace("/", "-")
-            + f"_{restaurant_name.replace(' ', '_')}.pdf"
+            + f"_{business_name.replace(' ', '_')}.pdf"
         )
         st.download_button(
             label="⬇️  Download PDF Invoice",

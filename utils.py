@@ -5,6 +5,9 @@ utils.py – Helper functions for AI Invoice Generator
 from __future__ import annotations
 import json
 import re
+import random
+import string
+import requests
 from typing import Any
 
 import pandas as pd
@@ -120,33 +123,85 @@ def convert_to_words(amount: float) -> str:
 
 
 # ---------------------------------------------------------------------------
-# AI Autofill (OpenAI-compatible)
+# AI Autofill (OpenAI-compatible) & Tavily Search
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are a restaurant invoice assistant.
-The user will describe an order in natural language.
-Return ONLY a valid JSON array of invoice line items – no extra text.
-Each object must have exactly these keys:
-  "date": string (e.g. "Today"),
-  "description": string,
-  "qty": number,
-  "unit_price": number,
-  "gst_pct": number (use 5 for food items unless stated otherwise)
+def generate_utr() -> str:
+    """Generate a random 12-character alphanumeric UTR."""
+    return "".join(random.choices(string.ascii_uppercase + string.digits, k=12))
+
+def generate_invoice_number() -> str:
+    """Generate a random invoice number like INV-123456."""
+    return f"INV-{random.randint(100000, 999999)}"
+
+
+SYSTEM_PROMPT_EXTRACT_QUERY = """You are an assistant that extracts business search queries.
+The user will describe an order or service request (e.g. "I hired AC Repair Pros in Delhi..." or "Plumbing service from Bob's Pipes...").
+Return a JSON object with two keys:
+1. "needs_search": boolean (true if a business name/location is mentioned and we should look it up).
+2. "search_query": string (the business name and location to search for, e.g. "AC Repair Pros Delhi").
 
 Example output:
-[
-  {"date": "Today", "description": "Paneer Tikka", "qty": 1, "unit_price": 280, "gst_pct": 5},
-  {"date": "Today", "description": "Butter Naan", "qty": 3, "unit_price": 45, "gst_pct": 5}
-]
+{
+  "needs_search": true,
+  "search_query": "AC Repair Pros Delhi"
+}
+"""
+
+SYSTEM_PROMPT_PARSE = """You are an intelligent universal invoice data extraction assistant.
+You will be provided with a user's natural language order/service description, and optionally some search context from the web about the business.
+
+Your task is to extract:
+1. "business": An object containing the business details.
+2. "staff": An object containing staff/handler details (Handled By, Staff/Agent ID).
+3. "items": An array of line items ordered or services rendered.
+
+If you cannot find specific identifiers in the context (or if no context is provided), you MUST creatively and autonomously generate plausible looking values for them.
+- Phone: 10 digits starting with 7, 8, or 9.
+- GSTIN/Tax ID: 15 alphanumeric characters (e.g. 27ABCDE1234F1Z5).
+- Registration No (e.g. CIN, MSME): 10-21 characters/digits.
+- Staff details: Create a plausible first name for "handled_by" and an alphanumeric "staff_id" (e.g., EMP-402, AGT-11).
+- Category: Categorize the item logically (e.g. Service, Product, Subscription, Consultation, Hardware, Software, Food, etc)
+- Tax (`gst_pct`): Intelligently decide whether an item should be taxed. If the item is very cheap (like a petty expense, e.g., "50rs motor") or usually non-taxable, set `gst_pct` to 0. Otherwise use a standard tax rate (e.g., 5, 12, or 18%).
+- Invoice Date (`invoice_date`): Extract the invoice date from the text. If multiple dates are provided, extract the latest/last date described. If no date is found, use "Today".
+
+Return ONLY a valid JSON object with the following structure – no extra text:
+
+{
+  "invoice_date": "Extracted last date or 'Today'",
+  "business": {
+    "name": "Extracted or inferred name",
+    "address": "Extracted or inferred address",
+    "phone": "Extracted or generated 10-digit number",
+    "gstin": "Extracted or generated 15-char GSTIN or Tax ID",
+    "reg_no": "Extracted or generated Registration or License No"
+  },
+  "staff": {
+    "handled_by": "Extracted or generated name",
+    "staff_id": "Extracted or generated ID"
+  },
+  "items": [
+    {
+      "date": "Extracted date or 'Today'",
+      "category": "Extracted or inferred category string (e.g. Service, Product, Maintenance, Labor)",
+      "description": "Item or service name",
+      "qty": number,
+      "unit_price": number,
+      "gst_pct": 5
+    }
+  ]
+}
 """
 
 
-def ai_autofill(prompt: str, api_key: str, base_url: str = "https://api.openai.com/v1") -> list[dict]:
+def ai_autofill(prompt: str, api_key: str, tavily_api_key: str = "", base_url: str = "https://api.groq.com/openai/v1") -> dict:
     """
     Call an OpenAI-compatible chat endpoint to parse a natural-language order
-    description into structured invoice rows.
+    description into structured invoice rows and business details.
+    
+    If tavily_api_key is provided, optionally performs a web search to enrich business data.
 
-    Returns a list of item dicts ready to be merged into the Streamlit data editor.
+    Returns a dict with "business" and "items".
     Raises RuntimeError with a descriptive message on failure.
     """
     try:
@@ -155,36 +210,115 @@ def ai_autofill(prompt: str, api_key: str, base_url: str = "https://api.openai.c
         raise RuntimeError("openai package not installed. Run: pip install openai")
 
     if not api_key or api_key.strip() == "":
-        raise RuntimeError("Please provide a valid OpenAI API key in the sidebar.")
+        raise RuntimeError("Please provide a valid API key in the sidebar.")
 
     client = OpenAI(api_key=api_key.strip(), base_url=base_url)
 
+    # STEP 1: Determine if we need to search for the business
+    search_context = ""
+    try:
+        query_response = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT_EXTRACT_QUERY},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.1,
+            max_tokens=300,
+        )
+        query_raw = query_response.choices[0].message.content or ""
+        json_match = re.search(r'\{.*\}', query_raw, re.DOTALL)
+        if json_match:
+            query_raw = json_match.group(0)
+        else:
+            query_raw = re.sub(r"```(?:json)?", "", query_raw).strip().rstrip("`").strip()
+            
+        print(f"Query Extraction Raw JSON: {query_raw}", flush=True)
+        query_data = json.loads(query_raw)
+        
+        needs_search = query_data.get("needs_search", False)
+        search_query = query_data.get("search_query", "")
+        print(f"Extraction result -> needs_search: {needs_search}, search_query: '{search_query}'", flush=True)
+        
+        # STEP 2: Use Tavily to search
+        if needs_search and search_query and tavily_api_key:
+            try:
+                tavily_resp = requests.post(
+                    "https://api.tavily.com/search",
+                    json={
+                        "api_key": tavily_api_key.strip(),
+                        "query": f"{search_query} details phone number address GSTIN company",
+                        "search_depth": "basic",
+                        "include_answer": True,
+                        "max_results": 3
+                    },
+                    timeout=10
+                )
+                if tavily_resp.status_code == 200:
+                    t_data = tavily_resp.json()
+                    search_context = f"Tavily Search Answer: {t_data.get('answer', '')}\n"
+                    for res in t_data.get("results", []):
+                        search_context += f"- {res.get('title')}: {res.get('content')}\n"
+                    print("Tavily search successful.", flush=True)
+                else:
+                    print(f"Tavily API Error {tavily_resp.status_code}: {tavily_resp.text}", flush=True)
+            except Exception as e:
+                print(f"Tavily search exception: {e}", flush=True)
+                
+    except Exception as e:
+        print(f"Query extraction failed: {e}", flush=True)
+
+    # STEP 3: Final extraction combining user prompt and search context
+    final_prompt = f"User Order Description:\n{prompt}\n\n"
+    if search_context:
+        final_prompt += f"Background search context for the business:\n{search_context}\n"
+
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="openai/gpt-oss-120b",
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
+            {"role": "system", "content": SYSTEM_PROMPT_PARSE},
+            {"role": "user", "content": final_prompt},
         ],
         temperature=0.2,
-        max_tokens=800,
+        max_tokens=2500,
     )
 
     raw = response.choices[0].message.content or ""
 
-    # Strip markdown code fences if present
-    raw = re.sub(r"```(?:json)?", "", raw).strip().rstrip("`").strip()
+    # Robust JSON extraction
+    json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+    if json_match:
+        raw = json_match.group(0)
+    else:
+        # Fallback strip markdown code fences if present
+        raw = re.sub(r"```(?:json)?", "", raw).strip().rstrip("`").strip()
 
+    parsed_data = {}
     try:
-        items_raw: list[dict] = json.loads(raw)
+        parsed_data = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"AI returned invalid JSON: {exc}\n\nRaw response:\n{raw}")
+        # Attempt to auto-repair lightly truncated JSON
+        for suffix in ["", "}", "]}", "]}", '"}', '"}]}']:
+            try:
+                fixed_raw = raw.rstrip(", ") + suffix
+                parsed_data = json.loads(fixed_raw)
+                break
+            except json.JSONDecodeError:
+                continue
+        else:
+            raise RuntimeError(f"AI returned invalid JSON: {exc}\n\nRaw response:\n{raw}")
 
-    # Normalise keys
-    normalised = []
+    items_raw = parsed_data.get("items", [])
+    business_raw = parsed_data.get("business", {})
+    staff_raw = parsed_data.get("staff", {})
+
+    # Normalise item keys
+    normalised_items = []
     for row in items_raw:
-        normalised.append(
+        normalised_items.append(
             {
                 "date": str(row.get("date", "Today")),
+                "category": str(row.get("category", "Service/Product")), # Default or AI extracted
                 "description": str(row.get("description", "")),
                 "qty": float(row.get("qty", 1)),
                 "unit_price": float(row.get("unit_price", 0)),
@@ -197,4 +331,9 @@ def ai_autofill(prompt: str, api_key: str, base_url: str = "https://api.openai.c
             }
         )
 
-    return normalised
+    return {
+        "invoice_date": parsed_data.get("invoice_date", "Today"),
+        "business": business_raw,
+        "staff": staff_raw,
+        "items": normalised_items
+    }

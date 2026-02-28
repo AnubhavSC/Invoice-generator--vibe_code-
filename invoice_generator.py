@@ -30,6 +30,17 @@ TEXT_MUTED = colors.HexColor("#777777")
 TEXT_BODY = colors.HexColor("#2D2D2D")
 WHITE = colors.white
 
+def _get_theme(data: dict) -> dict:
+    if "_theme" in data:
+        return data["_theme"]
+    theme_prefs = data.get("theme", {})
+    def get_c(key, default):
+        v = theme_prefs.get(key)
+        try: return colors.HexColor(v) if v else default
+        except Exception: return default
+    data["_theme"] = {"accent": get_c("accent_color", BRAND_ORANGE), "header": get_c("header_color", BRAND_DARK), "footer": get_c("footer_color", BRAND_DARK)}
+    return data["_theme"]
+
 W, H = A4  # 595.27 × 841.89 pts
 
 
@@ -46,6 +57,8 @@ def _meta_pair(c: canvas.Canvas, x: float, y: float, label: str, value: str) -> 
 
 def _draw_header(c: canvas.Canvas, width: float, height: float, data: dict) -> None:
     """Draw the white header bar with logo, restaurant info and INVOICE label."""
+    theme = _get_theme(data)
+    accent = theme["accent"]
     margin = 18 * mm
 
     # White header rectangle
@@ -57,7 +70,7 @@ def _draw_header(c: canvas.Canvas, width: float, height: float, data: dict) -> N
     logo_path: str | None = data.get("logo_path")
     if logo_path:
         try:
-            logo_size = 46 * mm
+            logo_size = 22 * mm
             c.drawImage(
                 logo_path,
                 cx - logo_size / 2,
@@ -71,17 +84,17 @@ def _draw_header(c: canvas.Canvas, width: float, height: float, data: dict) -> N
             logo_path = None  # fall through to circle
 
     if not logo_path:
-        c.setFillColor(BRAND_ORANGE)
+        c.setFillColor(accent)
         c.circle(cx, cy, 11 * mm, fill=1, stroke=0)
         c.setFillColor(WHITE)
         c.setFont("Helvetica-Bold", 10)
-        initials = "".join(w[0].upper() for w in data.get("restaurant_name", "R").split()[:2])
+        initials = "".join(w[0].upper() for w in data.get("business_name", "B").split()[:2])
         c.drawCentredString(cx, cy - 1.5 * mm, initials)
 
-    # Restaurant name – dark on white
+    # Business name – dark on white
     c.setFillColor(BRAND_DARK)
     c.setFont("Helvetica-Bold", 18)
-    c.drawString(margin + 26 * mm, height - 19 * mm, data.get("restaurant_name", ""))
+    c.drawString(margin + 26 * mm, height - 19 * mm, data.get("business_name", ""))
 
     c.setFont("Helvetica", 8.5)
     c.setFillColor(TEXT_MUTED)
@@ -89,11 +102,11 @@ def _draw_header(c: canvas.Canvas, width: float, height: float, data: dict) -> N
     c.drawString(
         margin + 26 * mm,
         height - 34 * mm,
-        f"Ph: {data.get('phone', '')}  |  GSTIN: {data.get('gstin', '')}  |  FSSAI: {data.get('fssai', '')}",
+        f"Ph: {data.get('phone', '')}  |  Tax ID/GSTIN: {data.get('gstin', '')}  |  Reg No: {data.get('reg_no', '')}",
     )
 
     # INVOICE label (right side) – orange stays, subtitle goes dark-muted
-    c.setFillColor(BRAND_ORANGE)
+    c.setFillColor(accent)
     c.setFont("Helvetica-Bold", 22)
     c.drawRightString(width - margin, height - 20 * mm, "INVOICE")
     c.setFillColor(TEXT_MUTED)
@@ -101,16 +114,16 @@ def _draw_header(c: canvas.Canvas, width: float, height: float, data: dict) -> N
     c.drawRightString(width - margin, height - 28 * mm, "Tax Invoice (GSTIN)")
 
     # Orange divider stripe
-    c.setFillColor(BRAND_ORANGE)
-    c.rect(0, height - 54 * mm, width, 2 * mm, fill=1, stroke=0)
+    c.setFillColor(accent)
+    c.rect(0, height - 42 * mm, width, 2 * mm, fill=1, stroke=0)
 
 
 def _draw_meta_box(c: canvas.Canvas, width: float, height: float, data: dict) -> None:
     """Draw the gray invoice-meta info box."""
     margin = 18 * mm
-    box_y = height - 78 * mm
+    box_y = height - 57 * mm
     c.setFillColor(BRAND_GRAY)
-    c.roundRect(margin, box_y, width - 2 * margin, 21 * mm, 3, fill=1, stroke=0)
+    c.roundRect(margin, box_y, width - 2 * margin, 13 * mm, 3, fill=1, stroke=0)
 
     col1 = margin + 5 * mm
     col2 = margin + (width - 2 * margin) * 0.33
@@ -118,45 +131,46 @@ def _draw_meta_box(c: canvas.Canvas, width: float, height: float, data: dict) ->
 
     _meta_pair(c, col1, box_y, "INVOICE NUMBER", data.get("invoice_number", ""))
     _meta_pair(c, col2, box_y, "INVOICE DATE", data.get("invoice_date", ""))
-    _meta_pair(c, col3, box_y, "STAY / VISIT PERIOD", data.get("visit_period", ""))
+    _meta_pair(c, col3, box_y, "SERVICE/PROJECT PERIOD", data.get("visit_period", ""))
 
 
 def _draw_billing_info(c: canvas.Canvas, width: float, height: float, data: dict) -> float:
     """Draw billed-to / served-by block. Returns the y of the separator line."""
     margin = 18 * mm
-    bill_y = height - 103 * mm
+    bill_y = height - 77 * mm
 
-    # Left – guest info
+    # Left – client info
     c.setFillColor(BRAND_DARK)
     c.setFont("Helvetica-Bold", 9)
     c.drawString(margin, bill_y + 3 * mm, "BILLED TO")
     c.setFillColor(TEXT_BODY)
     c.setFont("Helvetica", 9)
-    guest_label = data.get("customer_name", "Walk-in Guest")
-    covers = data.get("num_guests", "")
+    guest_label = data.get("customer_name", "Walk-in Client")
+    covers = data.get("customer_qty", "")
     if covers:
-        guest_label += f" ({covers} Covers)"
+        guest_label += f" ({covers} Qty/Pax)"
     c.drawString(margin, bill_y - 2 * mm, guest_label)
     c.setFillColor(TEXT_MUTED)
     c.setFont("Helvetica", 8.5)
-    c.drawString(margin, bill_y - 7 * mm, f"Table / Booking Ref: {data.get('table_ref', '')}")
+    c.drawString(margin, bill_y - 7 * mm, f"Customer/Project Ref: {data.get('customer_ref', '')}")
 
-    # Right – server info
-    c.setFillColor(BRAND_DARK)
-    c.setFont("Helvetica-Bold", 9)
-    c.drawRightString(width - margin, bill_y + 3 * mm, "SERVED BY")
-    c.setFillColor(TEXT_BODY)
-    c.setFont("Helvetica", 9)
-    served_by = data.get("served_by", "")
-    staff_id = data.get("staff_id", "")
-    served_str = f"{served_by} (Staff ID: {staff_id})" if staff_id else served_by
-    c.drawRightString(width - margin, bill_y - 2 * mm, served_str)
-    c.setFillColor(TEXT_MUTED)
-    c.setFont("Helvetica", 8.5)
-    c.drawRightString(width - margin, bill_y - 7 * mm, "Manager Approved: Yes")
+    # Right – agent info (only if provided)
+    served_by = data.get("handled_by", "").strip()
+    staff_id = data.get("staff_id", "").strip()
+    if served_by or staff_id:
+        c.setFillColor(BRAND_DARK)
+        c.setFont("Helvetica-Bold", 9)
+        c.drawRightString(width - margin, bill_y + 3 * mm, "HANDLED BY")
+        c.setFillColor(TEXT_BODY)
+        c.setFont("Helvetica", 9)
+        served_str = f"{served_by} (ID: {staff_id})" if (served_by and staff_id) else (served_by or staff_id)
+        c.drawRightString(width - margin, bill_y - 2 * mm, served_str)
+        c.setFillColor(TEXT_MUTED)
+        c.setFont("Helvetica", 8.5)
+        c.drawRightString(width - margin, bill_y - 7 * mm, "Manager Approved: Yes")
 
     # Thin separator
-    sep_y = height - 115 * mm
+    sep_y = height - 90 * mm
     c.setStrokeColor(LIGHT_BORDER)
     c.setLineWidth(0.5)
     c.line(margin, sep_y, width - margin, sep_y)
@@ -164,33 +178,33 @@ def _draw_billing_info(c: canvas.Canvas, width: float, height: float, data: dict
     return sep_y
 
 
-def _build_items_table(items: list[dict], num_guests: str = "") -> tuple[Table, set[int]]:
+def _build_items_table(items: list[dict], data: dict) -> tuple[Table, set[int]]:
     """
-    Build the ReportLab Table, automatically grouping rows by (date, meal_type)
+    Build the ReportLab Table, automatically grouping rows by (date, category)
     and inserting styled section-separator rows between each group.
     """
+    theme = _get_theme(data)
     col_widths = [20 * mm, 83 * mm, 18 * mm, 22 * mm, 18 * mm, 27 * mm]  # must match _TABLE_COL_WIDTHS
     header = ["DATE", "ITEM DESCRIPTION", "QTY", "UNIT (Rs)", "GST%", "AMOUNT (Rs)"]
 
-    # ── Group items by (date, meal_type) preserving insertion order ───────────
+    # ── Group items by (date, category) preserving insertion order ───────────
     from collections import OrderedDict
     groups: OrderedDict[tuple, list[dict]] = OrderedDict()
     for item in items:
-        key = (str(item.get("date", "")), str(item.get("meal_type", "")))
+        key = (str(item.get("date", "")), str(item.get("category", "")))
         groups.setdefault(key, []).append(item)
 
-    covers_str = f" ({num_guests} Covers)" if num_guests else ""
     table_data = [header]
     section_row_indices: set[int] = set()
 
-    for (date_str, meal_type), group_items in groups.items():
-        # Section label: "— BREAKFAST | 27 Jan (3 Covers) —"
+    for (date_str, category), group_items in groups.items():
+        # Section label: "— SERVICE | 27 Jan —"
         label_parts = []
-        if meal_type:
-            label_parts.append(meal_type.upper())
+        if category:
+            label_parts.append(category.upper())
         if date_str:
             label_parts.append(date_str)
-        section_label = "  —  ".join(label_parts) + covers_str
+        section_label = "  —  ".join(label_parts)
         section_label = f"— {section_label} —"
 
         r_idx = len(table_data)
@@ -214,7 +228,7 @@ def _build_items_table(items: list[dict], num_guests: str = "") -> tuple[Table, 
     # ── Base styles ───────────────────────────────────────────────────────────
     style_cmds = [
         # Header row
-        ("BACKGROUND",    (0, 0), (-1, 0), BRAND_DARK),
+        ("BACKGROUND",    (0, 0), (-1, 0), theme["header"]),
         ("TEXTCOLOR",     (0, 0), (-1, 0), WHITE),
         ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE",      (0, 0), (-1, 0), 8),
@@ -229,7 +243,7 @@ def _build_items_table(items: list[dict], num_guests: str = "") -> tuple[Table, 
         ("BOTTOMPADDING", (0, 1), (-1, -1), 3),
         ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
         # Grid lines
-        ("LINEBELOW",     (0, 0), (-1, 0),  0.5, BRAND_ORANGE),
+        ("LINEBELOW",     (0, 0), (-1, 0),  0.5, theme["accent"]),
         ("LINEBELOW",     (0, 1), (-1, -1), 0.3, LIGHT_BORDER),
         ("LINEAFTER",     (0, 0), (-1, -1), 0.3, LIGHT_BORDER),
         # Column alignment: date centred, description left, rest centred, amount right
@@ -247,7 +261,7 @@ def _build_items_table(items: list[dict], num_guests: str = "") -> tuple[Table, 
         if r in section_row_indices:
             style_cmds += [
                 ("BACKGROUND",    (0, r), (-1, r), colors.HexColor("#FFF3E6")),
-                ("TEXTCOLOR",     (0, r), (-1, r), BRAND_ORANGE),
+                ("TEXTCOLOR",     (0, r), (-1, r), theme["accent"]),
                 ("FONTNAME",      (0, r), (-1, r), "Helvetica-BoldOblique"),
                 ("FONTSIZE",      (0, r), (-1, r), 7.5),
                 ("SPAN",          (0, r), (-1, r)),
@@ -267,8 +281,9 @@ def _build_items_table(items: list[dict], num_guests: str = "") -> tuple[Table, 
 
 
 
-def _draw_totals(c: canvas.Canvas, width: float, tot_y: float, totals: dict) -> float:
+def _draw_totals(c: canvas.Canvas, width: float, tot_y: float, totals: dict, data: dict) -> float:
     """Draw the totals block. Returns y above the payment stamp."""
+    theme = _get_theme(data)
     margin = 18 * mm
     box_right = width - margin
     box_left = width - margin - 80 * mm
@@ -308,7 +323,7 @@ def _draw_totals(c: canvas.Canvas, width: float, tot_y: float, totals: dict) -> 
     # Grand total bar – sits one clear row_h below service charge
     gt_bar_bottom = tot_y - 4 * row_h - 2 * mm   # top-of-bar bottom edge
     gt_bar_height = row_h + 2 * mm
-    c.setFillColor(BRAND_ORANGE)
+    c.setFillColor(theme["accent"])
     c.rect(box_left - 2, gt_bar_bottom, box_right - box_left + 4, gt_bar_height, fill=1, stroke=0)
 
     c.setFillColor(WHITE)
@@ -331,17 +346,21 @@ _TABLE_X         = (W - _TABLE_TOTAL_W) / 2       # left-edge to perfectly centr
 def _draw_footer(c: canvas.Canvas, width: float, data: dict,
                  page: int = 1, total_pages: int = 1) -> None:
     """Draw the dark footer bar with dynamic page number."""
+    theme = _get_theme(data)
+    accent = theme["accent"]
+    footer_bg = theme["footer"]
     margin = 18 * mm
+    business_name = data.get('business_name', '')
     footer_lines = [
-        f"Thank you for dining at {data.get('restaurant_name', 'us')}! We hope to see you again soon.",
+        f"Thank you for your business! We look forward to serving you again.",
         "All prices are inclusive of applicable taxes as listed. Service charge as per invoice.",
-        f"GSTIN: {data.get('gstin', '')}  |  Subject to local jurisdiction.",
+        f"Tax ID/GSTIN: {data.get('gstin', '')}  |  Subject to local jurisdiction.",
         "This is a computer-generated invoice and does not require a physical signature.",
     ]
 
-    c.setFillColor(BRAND_DARK)
+    c.setFillColor(footer_bg)
     c.rect(0, 0, width, 16 * mm, fill=1, stroke=0)
-    c.setFillColor(BRAND_ORANGE)
+    c.setFillColor(accent)
     c.rect(0, 15.5 * mm, width, 0.5 * mm, fill=1, stroke=0)
 
     for i, line in enumerate(footer_lines):
@@ -354,7 +373,7 @@ def _draw_footer(c: canvas.Canvas, width: float, data: dict,
     c.drawRightString(
         width - margin,
         3 * mm,
-        f"Page {page} of {total_pages}  |  {data.get('restaurant_name', '')}",
+        f"Page {page} of {total_pages}  |  {business_name}",
     )
 
 
@@ -363,16 +382,19 @@ def _draw_continuation_header(c: canvas.Canvas, width: float, data: dict) -> flo
     Draw a compact top-of-page header for continuation pages.
     Returns the y-coordinate just below this header (where the table resumes).
     """
+    theme = _get_theme(data)
+    header_bg = theme["header"]
+    accent = theme["accent"]
     margin = 18 * mm
     bar_h  = 14 * mm
 
     # Thin dark bar at top
-    c.setFillColor(BRAND_DARK)
+    c.setFillColor(header_bg)
     c.rect(0, H - bar_h, width, bar_h, fill=1, stroke=0)
 
     c.setFillColor(WHITE)
     c.setFont("Helvetica-Bold", 9)
-    c.drawString(margin, H - bar_h + 4 * mm, data.get("restaurant_name", ""))
+    c.drawString(margin, H - bar_h + 4 * mm, data.get("business_name", ""))
 
     c.setFillColor(colors.HexColor("#AAAAAA"))
     c.setFont("Helvetica", 8)
@@ -383,7 +405,7 @@ def _draw_continuation_header(c: canvas.Canvas, width: float, data: dict) -> flo
     )
 
     # Thin orange stripe
-    c.setFillColor(BRAND_ORANGE)
+    c.setFillColor(accent)
     c.rect(0, H - bar_h - 1 * mm, width, 1 * mm, fill=1, stroke=0)
 
     return H - bar_h - 3 * mm   # y just below the stripe
@@ -398,11 +420,11 @@ def generate_invoice(data: dict) -> bytes:
     onto subsequent pages. Totals/payment/footer appear on the last page.
 
     Expected keys in `data`:
-      Restaurant: restaurant_name, address, phone, gstin, fssai, logo_path (optional)
+      Business:   business_name, address, phone, gstin, reg_no, logo_path (optional)
       Invoice:    invoice_number, invoice_date, visit_period
-      Customer:   customer_name, table_ref, num_guests
-      Staff:      served_by, staff_id
-      Items:      items  (list[dict] – date, description, qty, unit_price, gst_pct, amount, meal_type)
+      Customer:   customer_name, customer_ref, customer_qty
+      Staff:      handled_by, staff_id
+      Items:      items  (list[dict] – date, description, qty, unit_price, gst_pct, amount, category)
       Totals:     totals (dict from calculate_totals())
       Payment:    payment_mode, payment_ref
       Words:      amount_in_words
@@ -415,8 +437,8 @@ def generate_invoice(data: dict) -> bytes:
     TOTALS_H = 62 * mm   # space needed for totals + payment stamp on last page
 
     c = canvas.Canvas(buf, pagesize=A4)
-    c.setTitle(f"{data.get('restaurant_name', 'Invoice')} – Invoice {data.get('invoice_number', '')}")
-    c.setAuthor(data.get("restaurant_name", ""))
+    c.setTitle(f"{data.get('business_name', 'Invoice')} – Invoice {data.get('invoice_number', '')}")
+    c.setAuthor(data.get("business_name", ""))
     c.setSubject(f"Invoice {data.get('invoice_number', '')}")
 
     # ── Page 1 fixed elements ─────────────────────────────────────────────────
@@ -428,7 +450,7 @@ def generate_invoice(data: dict) -> bytes:
     totals = data.get("totals", {})
 
     if not items:
-        words_y = _draw_totals(c, W, sep_y - 30 * mm, totals)
+        words_y = _draw_totals(c, W, sep_y - 30 * mm, totals, data)
         _draw_payment_stamp(c, W, words_y, data)
         _draw_footer(c, W, data, page=1, total_pages=1)
         c.save()
@@ -436,9 +458,7 @@ def generate_invoice(data: dict) -> bytes:
         return buf.getvalue()
 
     # ── Build the full table once ─────────────────────────────────────────────
-    full_tbl, _ = _build_items_table(
-        items, num_guests=str(data.get("num_guests", ""))
-    )
+    full_tbl, _ = _build_items_table(items, data)
 
     # Intermediate pages only need MIN_GAP before footer – fill rows as far as possible
     page1_avail = sep_y - 2 * mm - FOOTER_H - MIN_GAP
@@ -497,7 +517,7 @@ def generate_invoice(data: dict) -> bytes:
         cur_bot_y = cont_top   # full continuation page height available
 
     tot_y = cur_bot_y - 6 * mm
-    words_y = _draw_totals(c, W, tot_y, totals)
+    words_y = _draw_totals(c, W, tot_y, totals, data)
 
     # Amount in words
     c.setFillColor(TEXT_MUTED)
